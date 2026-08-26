@@ -1,0 +1,137 @@
+# AppImage build for Kylin V10 (银河麒麟 V10).
+#
+# Why opensuse/leap:15.5?
+#   It ships glibc 2.31, which is the compatibility CEILING for Kylin V10.
+#   A binary built against a newer glibc (e.g. Ubuntu 22.04 = 2.35,
+#   Ubuntu 24.04 = 2.39) refuses to start on Kylin V10 with errors like
+#   "version 'GLIBC_2.34' not found". Building inside this container
+#   guarantees the produced AppImage runs on Kylin V10 and any newer
+#   glibc-based distro.
+#
+#   Alternative base with glibc 2.31: ubuntu:20.04 (also 2.31). We use
+#   leap because GitHub deprecated the ubuntu-20.04 hosted runner, while
+#   a pinned container image keeps the build reproducible.
+#
+# Trigger: manually (Actions -> Run workflow). Optionally restrict the
+# arch to build. The produced *.AppImage is uploaded as a downloadable
+# artifact so you can copy it onto your Kylin V10 box and test directly.
+
+name: AppImage (Kylin V10 / glibc 2.31)
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: "Target architecture to build"
+        required: false
+        default: "x86_64"
+        type: choice
+        options:
+          - x86_64
+          - aarch64
+          - both
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build-appimage:
+    name: Build AppImage (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            arch: x86_64
+          - platform: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            arch: aarch64
+    # On manual dispatch, build only the selected arch; build both otherwise.
+    if: >-
+      github.event.inputs.arch == 'both' ||
+      github.event.inputs.arch == matrix.arch
+    runs-on: ${{ matrix.platform }}
+    container:
+      image: opensuse/leap:15.5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          zypper --non-interactive --gpg-auto-import-keys refresh
+          zypper --non-interactive install --no-recommends \
+            ca-certificates-mozilla curl wget file git tar gzip xz pkg-config \
+            gcc gcc-c++ make webkit2gtk3-devel libopenssl-devel \
+            libappindicator3-1 librsvg-devel patchelf fuse3
+          zypper --non-interactive install -t pattern devel_basis
+
+      - name: Verify glibc build baseline
+        shell: bash
+        run: |
+          GLIBC_VERSION="$(getconf GNU_LIBC_VERSION | awk '{print $2}')"
+          echo "Building against glibc ${GLIBC_VERSION}"
+          test "$GLIBC_VERSION" = "2.31"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Setup Tauri signing key
+        # Required because tauri.conf.json sets createUpdaterArtifacts=true.
+        # If the secret is absent the build will fail at the updater step.
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 }}" ]; then
+            echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/updater.key"
+            KEY_B64="$(base64 < "$RUNNER_TEMP/updater.key" | tr -d '\r\n')"
+            echo "TAURI_SIGNING_PRIVATE_KEY=$KEY_B64" >> "$GITHUB_ENV"
+            if [ -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" ]; then
+              echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+            fi
+          else
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY_BASE64 secret is not set; updater signing will fail."
+          fi
+
+      - name: Build AppImage
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles appimage
+
+      - name: Verify AppImage glibc compatibility
+        shell: bash
+        run: |
+          BINARY="target/${{ matrix.target }}/release/dbx"
+          REQUIRED_GLIBC="$(readelf --version-info "$BINARY" \
+            | awk '/Name: GLIBC_/ { sub(/.*GLIBC_/, ""); sub(/ .*/, ""); print }' \
+            | sort -V | tail -n 1)"
+          echo "DBX requires glibc ${REQUIRED_GLIBC} (ceiling: 2.31)"
+          if [ "$(printf '%s\n2.31\n' "$REQUIRED_GLIBC" | sort -V | head -n 1)" != "$REQUIRED_GLIBC" ]; then
+            echo "::error::DBX requires glibc ${REQUIRED_GLIBC}, newer than the 2.31 Kylin V10 baseline." >&2
+            exit 1
+          fi
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbx-${{ matrix.arch }}-appimage
+          path: "target/${{ matrix.target }}/release/bundle/appimage/*.AppImage"
+          if-no-files-found: error
+          retention-days: 14
