@@ -12,49 +12,27 @@
 #   leap because GitHub deprecated the ubuntu-20.04 hosted runner, while
 #   a pinned container image keeps the build reproducible.
 #
-# Trigger: manually (Actions -> Run workflow). Optionally restrict the
-# arch to build. The produced *.AppImage is uploaded as a downloadable
-# artifact so you can copy it onto your Kylin V10 box and test directly.
+# Trigger: manually (Actions -> Run workflow). The produced *.AppImage is
+# uploaded as a downloadable artifact so you can copy it onto your Kylin V10
+# box and test directly. (x86_64 only; add an aarch64 job if needed later.)
 
 name: AppImage (Kylin V10 / glibc 2.31)
 
 on:
   workflow_dispatch:
-    inputs:
-      arch:
-        description: "Target architecture to build"
-        required: false
-        default: "x86_64"
-        type: choice
-        options:
-          - x86_64
-          - aarch64
-          - both
 
 permissions:
   contents: read
 
 env:
   CARGO_INCREMENTAL: "0"
+  TARGET: x86_64-unknown-linux-gnu
+  ARCH: x86_64
 
 jobs:
   build-appimage:
-    name: Build AppImage (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            arch: x86_64
-          - platform: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            arch: aarch64
-    # On manual dispatch, build only the selected arch; build both otherwise.
-    if: >-
-      github.event.inputs.arch == 'both' ||
-      github.event.inputs.arch == matrix.arch
-    runs-on: ${{ matrix.platform }}
+    name: Build AppImage (${{ env.ARCH }})
+    runs-on: ubuntu-24.04
     container:
       image: opensuse/leap:15.5
     steps:
@@ -91,7 +69,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.97.1
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ env.TARGET }}
 
       - name: Setup Tauri signing key
         # Required because tauri.conf.json sets createUpdaterArtifacts=true.
@@ -113,12 +91,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
-        run: pnpm tauri build --target ${{ matrix.target }} --bundles appimage
+        run: pnpm tauri build --target ${{ env.TARGET }} --bundles appimage
 
       - name: Verify AppImage glibc compatibility
         shell: bash
         run: |
-          BINARY="target/${{ matrix.target }}/release/dbx"
+          BINARY="target/${{ env.TARGET }}/release/dbx"
           REQUIRED_GLIBC="$(readelf --version-info "$BINARY" \
             | awk '/Name: GLIBC_/ { sub(/.*GLIBC_/, ""); sub(/ .*/, ""); print }' \
             | sort -V | tail -n 1)"
@@ -131,7 +109,7 @@ jobs:
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dbx-${{ matrix.arch }}-appimage
-          path: "target/${{ matrix.target }}/release/bundle/appimage/*.AppImage"
+          name: dbx-${{ env.ARCH }}-appimage
+          path: "target/${{ env.TARGET }}/release/bundle/appimage/*.AppImage"
           if-no-files-found: error
           retention-days: 14
