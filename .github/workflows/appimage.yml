@@ -45,8 +45,12 @@ jobs:
         shell: bash
         run: |
           zypper --non-interactive --gpg-auto-import-keys refresh
+          # coreutils provides base64/tr/dirname/uname; binutils provides
+          # readelf; sed is needed by some tooling. The leap base image is
+          # intentionally minimal, so we install these explicitly.
           zypper --non-interactive install --no-recommends \
             ca-certificates-mozilla curl wget file git tar gzip xz pkg-config \
+            coreutils binutils sed \
             gcc gcc-c++ make webkit2gtk3-devel libopenssl-devel \
             libappindicator3-1 librsvg-devel patchelf fuse3
           zypper --non-interactive install -t pattern devel_basis
@@ -65,8 +69,17 @@ jobs:
         with:
           node-version: 22
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+      # NOTE: we intentionally do NOT use pnpm/action-setup here. Its
+      # self-update shim shells out to `sed`/`dirname`/`uname`, which are
+      # missing from the minimal leap base image and cause
+      # ERR_PNPM_BROKEN_PNPM_INSTALL. Installing the exact pinned version via
+      # npm (node comes from the setup-node step above) avoids that shim.
+      - name: Install pnpm
+        shell: bash
+        run: |
+          PNPM_VER="$(node -p "require('./package.json').packageManager.replace('pnpm@','')")"
+          echo "Installing pnpm@${PNPM_VER} (from package.json packageManager)"
+          npm install -g "pnpm@${PNPM_VER}"
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
