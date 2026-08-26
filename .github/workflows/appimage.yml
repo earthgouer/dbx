@@ -17,7 +17,15 @@
 # uploaded as a downloadable artifact so you can copy it onto your Kylin V10
 # box and test directly. (x86_64 only; add an aarch64 job if needed later.)
 #
-# NOTE: opensuse/leap base images do NOT ship git or CA certificates, and
+# NOTE on toolchain: we deliberately do NOT use the JS-based actions
+# (actions/setup-node, dtolnay/rust-toolchain). Inside a minimal leap
+# container they rewrite $PATH to only include their own bin dirs, which
+# then breaks every later `shell: bash` step ("bash: executable file not
+# found in $PATH"). Instead we install Node (official tarball), Rust
+# (rustup) and pnpm (npm) directly in the bootstrap step and export the
+# merged PATH ourselves.
+#
+# NOTE on leap base image: it does NOT ship git or CA certificates, and
 # actions/checkout runs INSIDE the container (before any "install deps"
 # step). So we bootstrap git + ca-certificates first, otherwise checkout
 # fails with a cryptic error.
@@ -40,20 +48,49 @@ jobs:
     container:
       image: opensuse/leap:15.5
     steps:
-      # Bootstrap git + CA certs BEFORE checkout (checkout runs in-container).
-      - name: Bootstrap container (git, ca-certificates, build deps)
+      # Bootstrap everything: system deps + Node (tarball) + Rust (rustup)
+      # + pnpm (npm). Bash stays resolvable because we never let a JS action
+      # clobber $PATH.
+      - name: Bootstrap container (deps + Node + Rust + pnpm)
         shell: bash
         run: |
+          set -euo pipefail
           zypper --non-interactive --gpg-auto-import-keys refresh
-          # coreutils provides base64/tr/dirname/uname; binutils provides
-          # readelf; sed is needed by some tooling. The leap base image is
-          # intentionally minimal, so we install these explicitly.
+          # coreutils: base64/tr/dirname/uname ; binutils: readelf ; sel: sed.
           zypper --non-interactive install --no-recommends \
             ca-certificates-mozilla curl wget file git tar gzip xz pkg-config \
             coreutils binutils sed \
             gcc gcc-c++ make webkit2gtk3-devel libopenssl-devel \
             libappindicator3-1 librsvg-devel patchelf fuse3
           zypper --non-interactive install -t pattern devel_basis
+
+          # --- Node.js 22 (official binary tarball) ---
+          NODE_VER=22.11.0
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VER}/node-v${NODE_VER}-linux-x64.tar.xz" -o /tmp/node.tar.xz
+          tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
+          node --version && npm --version
+
+          # --- Rust via rustup (pinned toolchain) ---
+          curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain 1.97.1 \
+              --target x86_64-unknown-linux-gnu --profile minimal
+          # shellcheck disable=SC1091
+          source "$HOME/.cargo/env"
+          rustc --version && cargo --version
+
+          # --- pnpm (must match the "packageManager" field in package.json) ---
+          PNPM_VER=10.27.0
+          echo "Installing pnpm@${PNPM_VER}"
+          npm install -g "pnpm@${PNPM_VER}"
+          pnpm --version
+
+          # Export merged PATH for every subsequent step. We PREPEND (never
+          # replace) so /usr/bin (where bash lives) is always reachable.
+          {
+            echo "CARGO_HOME=$HOME/.cargo"
+            echo "RUSTUP_HOME=$HOME/.rustup"
+            echo "PATH=$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+          } >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v5
 
@@ -64,30 +101,9 @@ jobs:
           echo "Building against glibc ${GLIBC_VERSION}"
           test "$GLIBC_VERSION" = "2.31"
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
-
-      # NOTE: we intentionally do NOT use pnpm/action-setup here. Its
-      # self-update shim shells out to `sed`/`dirname`/`uname`, which are
-      # missing from the minimal leap base image and cause
-      # ERR_PNPM_BROKEN_PNPM_INSTALL. Installing the exact pinned version via
-      # npm (node comes from the setup-node step above) avoids that shim.
-      - name: Install pnpm
-        shell: bash
-        run: |
-          PNPM_VER="$(node -p "require('./package.json').packageManager.replace('pnpm@','')")"
-          echo "Installing pnpm@${PNPM_VER} (from package.json packageManager)"
-          npm install -g "pnpm@${PNPM_VER}"
-
       - name: Install frontend dependencies
+        shell: bash
         run: pnpm install --frozen-lockfile
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@1.97.1
-        with:
-          targets: x86_64-unknown-linux-gnu
 
       - name: Setup Tauri signing key
         # Required because tauri.conf.json sets createUpdaterArtifacts=true.
