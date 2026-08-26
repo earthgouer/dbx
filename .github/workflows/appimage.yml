@@ -10,11 +10,17 @@
 #
 #   Alternative base with glibc 2.31: ubuntu:20.04 (also 2.31). We use
 #   leap because GitHub deprecated the ubuntu-20.04 hosted runner, while
-#   a pinned container image keeps the build reproducible.
+#   a pinned container image keeps the build reproducible. leap also ships
+#   webkit2gtk 4.1, which Tauri 2 requires (Ubuntu 20.04 only has 4.0).
 #
 # Trigger: manually (Actions -> Run workflow). The produced *.AppImage is
 # uploaded as a downloadable artifact so you can copy it onto your Kylin V10
 # box and test directly. (x86_64 only; add an aarch64 job if needed later.)
+#
+# NOTE: opensuse/leap base images do NOT ship git or CA certificates, and
+# actions/checkout runs INSIDE the container (before any "install deps"
+# step). So we bootstrap git + ca-certificates first, otherwise checkout
+# fails with a cryptic error.
 
 name: AppImage (Kylin V10 / glibc 2.31)
 
@@ -34,9 +40,8 @@ jobs:
     container:
       image: opensuse/leap:15.5
     steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Linux build dependencies
+      # Bootstrap git + CA certs BEFORE checkout (checkout runs in-container).
+      - name: Bootstrap container (git, ca-certificates, build deps)
         shell: bash
         run: |
           zypper --non-interactive --gpg-auto-import-keys refresh
@@ -45,6 +50,8 @@ jobs:
             gcc gcc-c++ make webkit2gtk3-devel libopenssl-devel \
             libappindicator3-1 librsvg-devel patchelf fuse3
           zypper --non-interactive install -t pattern devel_basis
+
+      - uses: actions/checkout@v5
 
       - name: Verify glibc build baseline
         shell: bash
