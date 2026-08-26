@@ -26,12 +26,10 @@ permissions:
 
 env:
   CARGO_INCREMENTAL: "0"
-  TARGET: x86_64-unknown-linux-gnu
-  ARCH: x86_64
 
 jobs:
   build-appimage:
-    name: Build AppImage (${{ env.ARCH }})
+    name: Build AppImage (x86_64)
     runs-on: ubuntu-24.04
     container:
       image: opensuse/leap:15.5
@@ -69,7 +67,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@1.97.1
         with:
-          targets: ${{ env.TARGET }}
+          targets: x86_64-unknown-linux-gnu
 
       - name: Setup Tauri signing key
         # Required because tauri.conf.json sets createUpdaterArtifacts=true.
@@ -91,12 +89,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
-        run: pnpm tauri build --target ${{ env.TARGET }} --bundles appimage
+        run: pnpm tauri build --target x86_64-unknown-linux-gnu --bundles appimage
 
       - name: Verify AppImage glibc compatibility
         shell: bash
         run: |
-          BINARY="target/${{ env.TARGET }}/release/dbx"
+          BINARY="target/x86_64-unknown-linux-gnu/release/dbx"
           REQUIRED_GLIBC="$(readelf --version-info "$BINARY" \
             | awk '/Name: GLIBC_/ { sub(/.*GLIBC_/, ""); sub(/ .*/, ""); print }' \
             | sort -V | tail -n 1)"
@@ -109,7 +107,7 @@ jobs:
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dbx-${{ env.ARCH }}-appimage
-          path: "target/${{ env.TARGET }}/release/bundle/appimage/*.AppImage"
+          name: dbx-x86_64-appimage
+          path: "target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage"
           if-no-files-found: error
           retention-days: 14
